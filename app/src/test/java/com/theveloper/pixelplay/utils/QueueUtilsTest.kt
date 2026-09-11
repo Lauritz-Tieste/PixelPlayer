@@ -10,6 +10,7 @@ import kotlinx.coroutines.yield
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.concurrent.TimeUnit
 import kotlin.random.Random
 
 class QueueUtilsTest {
@@ -95,21 +96,67 @@ class QueueUtilsTest {
         )
     }
 
-    private fun buildSongs(count: Int): List<Song> = List(count) { index ->
-        Song(
-            id = "song-$index",
-            title = "Song $index",
-            artist = "Artist",
-            artistId = 1L,
-            album = "Album",
-            albumId = 1L,
-            path = "/tmp/song-$index.mp3",
-            contentUriString = "content://pixelplay/song/$index",
-            albumArtUriString = null,
-            duration = 180_000L,
-            mimeType = "audio/mpeg",
-            bitrate = 320_000,
-            sampleRate = 44_100
+    @Test
+    fun buildAnchoredShuffleQueueSuspending_balancesFavoritesWithDiscovery() = runBlocking {
+        val now = System.currentTimeMillis()
+        val songs = (0 until 30).map { index ->
+            val isFavorite = index < 20
+            val dateAdded = if (!isFavorite && index % 2 == 0) now else now - TimeUnit.DAYS.toMillis(120)
+            buildSong(
+                index = index,
+                isFavorite = isFavorite,
+                dateAdded = dateAdded,
+                artistId = (index % 6).toLong() + 1L
+            )
+        }
+
+        val shuffled = QueueUtils.buildAnchoredShuffleQueueSuspending(
+            currentQueue = songs,
+            anchorIndex = 0,
+            startAtZero = true,
+            random = Random(123)
         )
+
+        val firstWindow = shuffled.drop(1).take(14)
+        val nonFavoriteCount = firstWindow.count { !it.isFavorite }
+        val discoveryCount = firstWindow.count { now - normalizeDateAdded(it.dateAdded) <= TimeUnit.DAYS.toMillis(45) }
+
+        assertTrue("Early window should include non-favorites for variety", nonFavoriteCount >= 5)
+        assertTrue("Early window should include recently added discovery songs", discoveryCount >= 3)
+    }
+
+    private fun buildSongs(count: Int): List<Song> = List(count) { index ->
+        buildSong(index)
+    }
+
+    private fun buildSong(
+        index: Int,
+        isFavorite: Boolean = false,
+        dateAdded: Long = 0L,
+        artistId: Long = 1L
+    ) = Song(
+        id = "song-$index",
+        title = "Song $index",
+        artist = "Artist",
+        artistId = artistId,
+        album = "Album",
+        albumId = 1L,
+        path = "/tmp/song-$index.mp3",
+        contentUriString = "content://pixelplay/song/$index",
+        albumArtUriString = null,
+        duration = 180_000L,
+        isFavorite = isFavorite,
+        dateAdded = dateAdded,
+        mimeType = "audio/mpeg",
+        bitrate = 320_000,
+        sampleRate = 44_100
+    )
+
+    private fun normalizeDateAdded(dateAdded: Long): Long {
+        return when {
+            dateAdded <= 0L -> 0L
+            dateAdded < 1_000_000_000_000L -> dateAdded * 1000L
+            else -> dateAdded
+        }
     }
 }
